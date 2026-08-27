@@ -1,0 +1,23 @@
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+model UserAlert {
+  id       String @id @default(cuid())
+  clerkId  String @unique 
+  latitude Float
+  longitude Float
+  fcmToken String? 
+  lastEarthquakeAlertedAt DateTime? 
+  lastRainfallAlertDate   String?   
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

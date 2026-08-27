@@ -1,0 +1,18 @@
+name: Weather Alerts Cron
+
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes — well within GitHub Actions free minutes
+  workflow_dispatch: {}    # lets you trigger it manually from the Actions tab for testing
+
+jobs:
+  check-alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call check-alerts endpoint
+        run: |
+          curl -sf -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.APP_URL }}/api/cron/check-alerts"
+        # Every hit above queries Supabase via Prisma, which as a side effect
+        # keeps the free Supabase project from auto-pausing on inactivity.
