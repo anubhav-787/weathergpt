@@ -51,11 +51,11 @@ const Navbar = () => {
       {isOpen && (
         <div className="md:hidden flex flex-col gap-3 mt-3 text-white">
           <Show when="signed-in">
-          <Link href="/Chat" className="flex items-center hover:text-blue-200">
-            <MessageCircleMore className="h-4 w-4 mr-1" /> Chat
+          <Link href="/Dashboard" className="flex items-center hover:text-blue-200">
+            <MessageCircleMore className="h-4 w-4 mr-1" /> Dashboard
           </Link>
           <Link href="/contact" className="flex items-center hover:text-blue-200">
-            <Contact2 className="h-4 w-4 mr-1" /> Contact
+            <Contact2 className="h-4 w-4 mr-1" /> Contact Us
           </Link>
 
 
