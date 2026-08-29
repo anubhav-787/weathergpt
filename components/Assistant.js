@@ -42,6 +42,9 @@ const LOCALES = {
     ur: "ur-IN",
 };
 
+const ALERTS_ENABLED_KEY = "weatherAlertsEnabled";
+const FCM_TOKEN_KEY = "weatherAlertsFcmToken";
+
 // ---------------------------------------------------------
 // TRANSLATIONS
 // ---------------------------------------------------------
@@ -613,6 +616,33 @@ const Assistant = () => {
             setOccupation(localStorage.getItem("occupation") || "");
             setBusinessType(localStorage.getItem("businessType") || "");
         }
+
+        const restoreAlertsState = async () => {
+            const storedAlertsEnabled = localStorage.getItem(ALERTS_ENABLED_KEY) === "true";
+            if (!storedAlertsEnabled) return;
+
+            if (Notification.permission !== "granted") {
+                localStorage.removeItem(ALERTS_ENABLED_KEY);
+                localStorage.removeItem(FCM_TOKEN_KEY);
+                setAlertsEnabled(false);
+                return;
+            }
+
+            const token = await requestNotificationPermission();
+            if (!token) {
+                localStorage.removeItem(ALERTS_ENABLED_KEY);
+                localStorage.removeItem(FCM_TOKEN_KEY);
+                setAlertsEnabled(false);
+                setAlertsStatus(t("notificationDenied"));
+                return;
+            }
+
+            localStorage.setItem(FCM_TOKEN_KEY, token);
+            setAlertsEnabled(true);
+            await syncAlertProfile({ fcmToken: token });
+        };
+
+        restoreAlertsState();
     }, []);
 
     const selectLanguage = (lang) => {
@@ -632,6 +662,7 @@ const Assistant = () => {
     };
 
     const syncAlertProfile = async ({ fcmToken } = {}) => {
+        const token = fcmToken || localStorage.getItem(FCM_TOKEN_KEY) || undefined;
         const { lat, lon } = userCoordsRef.current;
         if (!clerkId || lat == null || lon == null) return;
 
@@ -643,7 +674,7 @@ const Assistant = () => {
                     clerkId,
                     latitude: lat,
                     longitude: lon,
-                    fcmToken: fcmToken || undefined,
+                    fcmToken: token || undefined,
                 }),
             });
 
@@ -652,7 +683,14 @@ const Assistant = () => {
                 throw new Error(data.error || "Failed to sync alert profile");
             }
 
-            setAlertsStatus(fcmToken ? t("alertEnabled") : t("locationSaved"));
+            if (token) {
+                localStorage.setItem(ALERTS_ENABLED_KEY, "true");
+                localStorage.setItem(FCM_TOKEN_KEY, token);
+                setAlertsEnabled(true);
+                setAlertsStatus(t("alertEnabled"));
+            } else {
+                setAlertsStatus(t("locationSaved"));
+            }
         } catch (err) {
             console.error("Alert profile sync error:", err);
             setAlertsStatus(t("alertRetry"));
@@ -663,10 +701,15 @@ const Assistant = () => {
         const token = await requestNotificationPermission();
 
         if (!token) {
+            localStorage.removeItem(ALERTS_ENABLED_KEY);
+            localStorage.removeItem(FCM_TOKEN_KEY);
+            setAlertsEnabled(false);
             setAlertsStatus(t("notificationDenied"));
             return;
         }
 
+        localStorage.setItem(ALERTS_ENABLED_KEY, "true");
+        localStorage.setItem(FCM_TOKEN_KEY, token);
         setAlertsEnabled(true);
         await syncAlertProfile({ fcmToken: token });
     };
@@ -696,7 +739,7 @@ const Assistant = () => {
                     setWeather(data);
                     setWeatherError("");
 
-                    syncAlertProfile();
+                    syncAlertProfile({ fcmToken: localStorage.getItem(FCM_TOKEN_KEY) || undefined });
                 } catch (error) {
                     console.error("Weather error:", error);
                     setWeatherError(t("unableWeather"));
