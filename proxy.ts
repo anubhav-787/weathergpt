@@ -1,6 +1,13 @@
-import { clerkMiddleware } from '@clerk/nextjs/server';
+import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
+import { NextResponse } from 'next/server';
 
-export default clerkMiddleware();
+const isPublicRoute = createRouteMatcher(['/api/cron/check-alerts']);
+
+export default clerkMiddleware((auth, req) => {
+  if (isPublicRoute(req)) {
+    return NextResponse.next();
+  }
+});
 
 export const config = {
   matcher: [
