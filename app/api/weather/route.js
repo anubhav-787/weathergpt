@@ -18,8 +18,8 @@ export async function GET(req) {
     const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${key}`;
     const aqiUrl = `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${key}`;
 
-    // NEW: Open-Meteo forecast — free, no key, gives today's rain probability & expected mm
-    // (OpenWeather's 2.5/weather "current conditions" endpoint has no rain-probability field)
+    // Free, no-key forecast source — used only for today's rain probability/amount,
+    // since OpenWeather's 2.5/weather "current conditions" endpoint has no rain-probability field.
     const rainUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=precipitation_probability_max,precipitation_sum&forecast_days=1&timezone=auto`;
 
     const [weatherRes, aqiRes, rainRes] = await Promise.all([
@@ -44,7 +44,7 @@ export async function GET(req) {
       );
     }
 
-    // Rain forecast is best-effort — don't fail the whole response if it errors
+    // Rain forecast is best-effort — don't fail the whole response if this one errors
     let rainChanceToday = null;
     let rainSumToday = null;
     try {
@@ -80,8 +80,8 @@ export async function GET(req) {
       icon: weatherData.weather?.[0]?.icon,
       aqi,
       aqiLabel: aqi ? aqiLabels[aqi] : "Unknown",
-      rainChanceToday, // NEW — percentage, e.g. 68
-      rainSumToday,    // NEW — mm expected today, e.g. 12.4
+      rainChanceToday,
+      rainSumToday,
     };
 
     return NextResponse.json(summary);
