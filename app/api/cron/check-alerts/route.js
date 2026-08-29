@@ -3,12 +3,46 @@ import { prisma } from "../../../../lib/prisma"; // adjust relative path to matc
 import { sendPushToToken } from "../../../../lib/firebaseAdmin";
 
 const USGS_BASE = "https://earthquake.usgs.gov/fdsnws/event/1/query";
-const OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast";
+const OPENWEATHER_FORECAST_BASE = "https://api.openweathermap.org/data/2.5/forecast";
 
 const MIN_MAGNITUDE = Number(process.env.EARTHQUAKE_MIN_MAGNITUDE || 4.0);
 const POLL_WINDOW_MINUTES = 16; // slightly wider than the 15-min cron interval, avoids gaps
 const RAIN_PROBABILITY_THRESHOLD = Number(process.env.RAIN_PROBABILITY_THRESHOLD || 70); // %
 const RAIN_SUM_THRESHOLD_MM = Number(process.env.RAIN_SUM_THRESHOLD_MM || 10); // mm/day
+
+async function getOpenWeatherRainForecast(lat, lon) {
+  const key = process.env.OPENWEATHER_API_KEY;
+  if (!key) {
+    throw new Error("OPENWEATHER_API_KEY is missing");
+  }
+
+  const url = `${OPENWEATHER_FORECAST_BASE}?lat=${lat}&lon=${lon}&units=metric&appid=${key}`;
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`OpenWeather forecast returned HTTP ${res.status}`);
+  }
+
+  const data = await res.json();
+  const list = Array.isArray(data.list) ? data.list : [];
+  const todayKey = new Date().toISOString().slice(0, 10);
+
+  const dayEntries = list.filter((item) => {
+    const dateKey = new Date(item.dt * 1000).toISOString().slice(0, 10);
+    return dateKey === todayKey;
+  });
+
+  if (dayEntries.length === 0) {
+    return { probability: 0, sumMm: 0 };
+  }
+
+  const probability = Math.max(...dayEntries.map((item) => Number(item.pop ?? 0) * 100), 0);
+  const sumMm = dayEntries.reduce((total, item) => total + Number(item.rain?.["3h"] ?? 0), 0);
+
+  return {
+    probability: Number(probability.toFixed(0)),
+    sumMm: Number(sumMm.toFixed(1)),
+  };
+}
 
 // Great-circle distance between two lat/lon points, in km
 function haversineKm(lat1, lon1, lat2, lon2) {
@@ -28,16 +62,24 @@ function feltRadiusKm(magnitude) {
 }
 
 export async function GET(req) {
-  // Protect the endpoint — only your GitHub Actions cron (or you, manually) should hit this
+  const requestUrl = new URL(req.url);
+  const isLocalDebug = process.env.NODE_ENV !== "production" && !process.env.CRON_SECRET;
   const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+
+  // Protect the endpoint in production, but allow manual local debugging when no secret is configured.
+  if (!isLocalDebug && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  const requestUrl = new URL(req.url);
   const testMode = requestUrl.searchParams.get("test") === "1";
   const testClerkId = requestUrl.searchParams.get("clerkId");
-  const results = { usersChecked: 0, earthquakeAlertsSent: 0, rainfallAlertsSent: 0, testAlertsSent: 0, errors: [] };
+  const results = {
+    usersChecked: 0,
+    earthquakeAlertsSent: 0,
+    rainfallAlertsSent: 0,
+    testAlertsSent: 0,
+    rainfallDebug: [],
+    errors: [],
+  };
 
   try {
     const users = await prisma.userAlert.findMany({
@@ -55,7 +97,7 @@ export async function GET(req) {
           title: "WeatherGPT Alert Test",
           body: "Live alerts are connected and ready to notify you.",
           data: { type: "test" },
-          icon: "/icons/rain-192.png.png",
+          icon: "/icons/rain-192.png",
         });
 
         if (pushResult.ok) {
@@ -130,51 +172,50 @@ export async function GET(req) {
       }
     }
 
-    // ---- 2. Heavy rainfall check (Open-Meteo, all users batched into one call) ----
+    // ---- 2. Heavy rainfall check (OpenWeather 5-day forecast) ----
     try {
-      const latParam = users.map((u) => u.latitude).join(",");
-      const lonParam = users.map((u) => u.longitude).join(",");
+      for (const user of users) {
+        try {
+          const forecast = await getOpenWeatherRainForecast(user.latitude, user.longitude);
+          const probMax = forecast.probability;
+          const sumMm = forecast.sumMm;
+          const date = new Date().toISOString().slice(0, 10);
 
-      const rainUrl =
-        `${OPEN_METEO_BASE}?latitude=${latParam}&longitude=${lonParam}` +
-        `&daily=precipitation_sum,precipitation_probability_max&forecast_days=1&timezone=auto`;
+          const isHeavy = probMax >= RAIN_PROBABILITY_THRESHOLD && sumMm >= RAIN_SUM_THRESHOLD_MM;
+          if (!isHeavy) {
+            results.rainfallDebug.push({
+              clerkId: user.clerkId,
+              reason: "below_threshold",
+              probability: probMax,
+              sumMm,
+              thresholdProbability: RAIN_PROBABILITY_THRESHOLD,
+              thresholdSumMm: RAIN_SUM_THRESHOLD_MM,
+            });
+            continue;
+          }
+          if (user.lastRainfallAlertDate === date) {
+            results.rainfallDebug.push({ clerkId: user.clerkId, reason: "already_alerted_today", date });
+            continue;
+          }
 
-      const rainRes = await fetch(rainUrl, { cache: "no-store" });
-      if (!rainRes.ok) throw new Error(`Open-Meteo returned HTTP ${rainRes.status}`);
-      const rainJson = await rainRes.json();
-
-      // Single location returns one object; multiple locations return an array —
-      // normalize to an array so indexing lines up with `users` either way.
-      const perLocation = Array.isArray(rainJson) ? rainJson : [rainJson];
-
-      for (let i = 0; i < users.length; i++) {
-        const user = users[i];
-        const forecast = perLocation[i];
-        if (!forecast?.daily) continue;
-
-        const probMax = forecast.daily.precipitation_probability_max?.[0];
-        const sumMm = forecast.daily.precipitation_sum?.[0];
-        const date = forecast.daily.time?.[0];
-
-        const isHeavy = probMax >= RAIN_PROBABILITY_THRESHOLD && sumMm >= RAIN_SUM_THRESHOLD_MM;
-        if (!isHeavy) continue;
-        if (user.lastRainfallAlertDate === date) continue; // already alerted today
-
-        const pushResult = await sendPushToToken(user.fcmToken, {
-          title: "🌧️ Heavy Rainfall Alert",
-          body: `Heavy rain forecast today (${sumMm}mm, ${probMax}% chance). Flood risk may be elevated — stay alert.`,
-          data: { type: "rainfall", precipitation_sum: String(sumMm), probability: String(probMax) },
-          icon: "/icons/rain-192.png",
-        });
-
-        if (pushResult.ok) {
-          results.rainfallAlertsSent++;
-          await prisma.userAlert.update({
-            where: { id: user.id },
-            data: { lastRainfallAlertDate: date },
+          const pushResult = await sendPushToToken(user.fcmToken, {
+            title: "🌧️ Heavy Rainfall Alert",
+            body: `Heavy rain forecast today (${sumMm}mm, ${probMax}% chance). Flood risk may be elevated — stay alert.`,
+            data: { type: "rainfall", precipitation_sum: String(sumMm), probability: String(probMax) },
+            icon: "/icons/rain-192.png",
           });
-        } else if (pushResult.error?.includes("registration-token-not-registered")) {
-          await prisma.userAlert.update({ where: { id: user.id }, data: { fcmToken: null } });
+
+          if (pushResult.ok) {
+            results.rainfallAlertsSent++;
+            await prisma.userAlert.update({
+              where: { id: user.id },
+              data: { lastRainfallAlertDate: date },
+            });
+          } else if (pushResult.error?.includes("registration-token-not-registered")) {
+            await prisma.userAlert.update({ where: { id: user.id }, data: { fcmToken: null } });
+          }
+        } catch (forecastError) {
+          results.rainfallDebug.push({ clerkId: user.clerkId, reason: "forecast_error", error: forecastError.message });
         }
       }
     } catch (e) {
