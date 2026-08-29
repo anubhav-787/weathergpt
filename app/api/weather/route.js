@@ -18,9 +18,9 @@ export async function GET(req) {
     const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${key}`;
     const aqiUrl = `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${key}`;
 
-    // Free, no-key forecast source — used only for today's rain probability/amount,
-    // since OpenWeather's 2.5/weather "current conditions" endpoint has no rain-probability field.
-    const rainUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=precipitation_probability_max,precipitation_sum&forecast_days=1&timezone=auto`;
+    // OpenWeather's 5-day forecast contains precipitation probability and 3-hour rain totals,
+    // which are needed for today's rain chance and expected rainfall.
+    const rainUrl = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&units=metric&appid=${key}`;
 
     const [weatherRes, aqiRes, rainRes] = await Promise.all([
       fetch(weatherUrl, { cache: "no-store" }),
@@ -49,9 +49,17 @@ export async function GET(req) {
     let rainSumToday = null;
     try {
       const rainData = await rainRes.json();
-      if (rainRes.ok) {
-        rainChanceToday = rainData.daily?.precipitation_probability_max?.[0] ?? null;
-        rainSumToday = rainData.daily?.precipitation_sum?.[0] ?? null;
+      if (rainRes.ok && Array.isArray(rainData.list)) {
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const todayEntries = rainData.list.filter((item) => {
+          const itemDateKey = new Date(item.dt * 1000).toISOString().slice(0, 10);
+          return itemDateKey === todayKey;
+        });
+
+        if (todayEntries.length > 0) {
+          rainChanceToday = Math.max(...todayEntries.map((item) => Number(item.pop ?? 0) * 100), 0);
+          rainSumToday = todayEntries.reduce((sum, item) => sum + Number(item.rain?.["3h"] ?? 0), 0);
+        }
       }
     } catch (e) {
       console.error("Rain forecast fetch failed (non-fatal):", e);
